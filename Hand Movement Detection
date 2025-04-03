@@ -1,0 +1,73 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+
+# Initialize MediaPipe Pose
+mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+pose = mp_pose.Pose()
+
+# Start video capture
+cap = cv2.VideoCapture(0)
+
+# Store previous wrist positions & timestamps
+prev_left_wrist = None
+prev_right_wrist = None
+still_start_time = None  # When hands first became still
+warning_delay = 2  # Seconds before warning appears
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        print("❌ Failed to capture frame.")
+        break
+
+    # Convert to RGB for MediaPipe
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(frame_rgb)
+
+    if results.pose_landmarks:
+        # Extract landmarks
+        landmarks = results.pose_landmarks.landmark
+        left_wrist = landmarks[mp_pose.PoseLandmark.LEFT_WRIST]
+        right_wrist = landmarks[mp_pose.PoseLandmark.RIGHT_WRIST]
+
+        # Convert to NumPy arrays
+        left_wrist_pos = np.array([left_wrist.x, left_wrist.y])
+        right_wrist_pos = np.array([right_wrist.x, right_wrist.y])
+
+        # Check movement if previous positions exist
+        if prev_left_wrist is not None and prev_right_wrist is not None:
+            left_movement = np.linalg.norm(left_wrist_pos - prev_left_wrist)
+            right_movement = np.linalg.norm(right_wrist_pos - prev_right_wrist)
+
+            # Movement threshold (adjustable)
+            movement_threshold = 0.01  # Lower = more sensitive
+
+            if left_movement < movement_threshold and right_movement < movement_threshold:
+                # Hands are still - check time
+                if still_start_time is None:
+                    still_start_time = time.time()  # Start timer
+                elif time.time() - still_start_time > warning_delay:
+                    cv2.putText(frame, "⚠️ Move your hands for better engagement!", 
+                                (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            else:
+                # Reset timer if hands move
+                still_start_time = None
+
+        # Update previous wrist positions
+        prev_left_wrist = left_wrist_pos
+        prev_right_wrist = right_wrist_pos
+
+        # Draw pose landmarks
+        mp_drawing.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+
+    # Show the video feed
+    cv2.imshow("AI Public Speaking Coach - Hand Movement Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
