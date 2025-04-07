@@ -1,1 +1,149 @@
+import os
+import wave
+import threading
+import keyboard
+import datetime
+import json
 
+import pyaudio
+import librosa
+import soundfile as sf
+from google.cloud import speech
+
+# === 🔐 Set your Google API Key ===
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"C:\Users\User\Desktop\KitaHack25\AI Training\KitaHack25.json"
+
+# === 🎙️ Recording Settings ===
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 1024
+OUTPUT_FILE = "manual_record.wav"
+
+FILLER_WORDS = ["um", "uh", "like", "you know", "so", "actually", "basically"]
+recording = True
+frames = []
+
+# === 🎙️ RECORD AUDIO UNTIL ENTER ===
+def record_audio():
+    global frames
+    audio = pyaudio.PyAudio()
+    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE,
+                        input=True, frames_per_buffer=CHUNK)
+    print("🎤 Recording... Press ENTER to stop.")
+    
+    while recording:
+        data = stream.read(CHUNK)
+        frames.append(data)
+
+    print("🛑 Stopping recording...")
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    with wave.open(OUTPUT_FILE, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(audio.get_sample_size(FORMAT))
+        wf.setframerate(RATE)
+        wf.writeframes(b''.join(frames))
+
+# === 🔍 SPEECH ANALYSIS FUNCTIONS ===
+def detect_filler_words(transcript):
+    return sum(transcript.lower().split().count(word) for word in FILLER_WORDS)
+
+def detect_mumbling(audio_path):
+    y, sr_rate = librosa.load(audio_path)
+    volume = librosa.feature.rms(y=y).mean()
+    clarity = librosa.feature.spectral_centroid(y=y, sr=sr_rate).mean()
+    print(f"📊 Volume: {volume:.4f}, Clarity: {clarity:.2f}")
+    return volume < 0.01 or clarity < 1500
+
+def analyze_speech(audio_path):
+    client = speech.SpeechClient()
+    with open(audio_path, "rb") as f:
+        content = f.read()
+
+    audio = speech.RecognitionAudio(content=content)
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+        sample_rate_hertz=16000,
+        language_code="en-US"
+    )
+
+    response = client.recognize(config=config, audio=audio)
+    transcript = ""
+    for result in response.results:
+        transcript += result.alternatives[0].transcript + " "
+
+    word_count = len(transcript.split())
+    y, sr_rate = librosa.load(audio_path)
+    duration = librosa.get_duration(y=y, sr=sr_rate)
+    wpm = (word_count / duration) * 60 if duration > 0 else 0
+
+    filler_count = detect_filler_words(transcript)
+    mumbled = detect_mumbling(audio_path)
+
+    print("\n📝 Transcript:", transcript.strip())
+    print(f"🕒 Duration: {duration:.2f}s, 🧠 Words: {word_count}, 📈 WPM: {wpm:.2f}")
+
+    feedback = []
+    if filler_count > 3:
+        feedback.append("⚠️ Too many filler words!")
+    if mumbled:
+        feedback.append("⚠️ Speech was unclear or mumbled.")
+    if wpm > 160:
+        feedback.append("⚠️ Speaking too fast! Try slowing down.")
+    elif wpm < 100:
+        feedback.append("⚠️ Speaking too slow! Try a more natural pace.")
+    if not feedback:
+        feedback.append("✅ Speech sounded confident and clear!")
+
+    print("\n🔎 Feedback:")
+    for f in feedback:
+        print("•", f)
+
+    result = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "transcript": transcript.strip(),
+        "duration_seconds": round(duration, 2),
+        "word_count": word_count,
+        "wpm": round(wpm, 2),
+        "filler_word_count": filler_count,
+        "mumbled": mumbled,
+        "feedback": feedback
+    }
+
+    # Save to file
+    save_feedback(result)
+    return result
+
+# === 💾 SAVE HISTORY ===
+def save_feedback(result):
+    filename = "feedback_history.json"
+    history = []
+
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            try:
+                history = json.load(f)
+            except:
+                history = []
+
+    history.append(result)
+
+    with open(filename, "w") as f:
+        
+        json.dump(history, f, indent=4)
+
+    print("\n💾 Saved feedback to feedback_history.json")
+
+# === 🚀 MAIN ENTRY POINT ===
+if __name__ == "__main__":
+    record_thread = threading.Thread(target=record_audio)
+    record_thread.start()
+
+    keyboard.wait('enter')
+    recording = False
+    record_thread.join()
+
+    analyze_speech(OUTPUT_FILE)
